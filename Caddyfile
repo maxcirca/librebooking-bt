@@ -2,16 +2,11 @@
 	auto_https off
 	admin off
 	frankenphp
+	order php_server before file_server
 }
 
 :{$PORT:8080} {
 	root * /app/Web
-
-	log {
-		output stderr
-		level DEBUG
-	}
-
 	encode zstd br gzip
 	php_server
 }
