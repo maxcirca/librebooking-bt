@@ -26,7 +26,8 @@ RUN sed -i 's/Listen 80$/Listen 8080/' /etc/apache2/ports.conf \
     && sed -i 's/:80>/:8080>/' /etc/apache2/sites-enabled/000-default.conf \
     && sed -i 's|DocumentRoot /var/www/html|DocumentRoot /var/www/html/Web|' \
         /etc/apache2/sites-enabled/000-default.conf \
-    && a2enmod rewrite headers
+    && a2dismod mpm_event mpm_worker || true \
+    && a2enmod mpm_prefork rewrite headers
 
 # Allow .htaccess overrides
 RUN echo '<Directory /var/www/html/Web>\n\
