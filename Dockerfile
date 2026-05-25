@@ -22,11 +22,15 @@ RUN docker-php-ext-configure gd --with-freetype --with-jpeg \
 COPY --from=composer:lts /usr/bin/composer /usr/bin/composer
 
 # Configure Apache: listen on 8080, serve from Web/
+# Forcefully remove any conflicting MPM symlinks, then enable only mpm_prefork
 RUN sed -i 's/Listen 80$/Listen 8080/' /etc/apache2/ports.conf \
     && sed -i 's/:80>/:8080>/' /etc/apache2/sites-enabled/000-default.conf \
     && sed -i 's|DocumentRoot /var/www/html|DocumentRoot /var/www/html/Web|' \
         /etc/apache2/sites-enabled/000-default.conf \
-    && a2dismod mpm_event mpm_worker || true \
+    && rm -f /etc/apache2/mods-enabled/mpm_event.load \
+              /etc/apache2/mods-enabled/mpm_event.conf \
+              /etc/apache2/mods-enabled/mpm_worker.load \
+              /etc/apache2/mods-enabled/mpm_worker.conf \
     && a2enmod mpm_prefork rewrite headers
 
 # Allow .htaccess overrides
@@ -51,6 +55,7 @@ RUN COMPOSER_ALLOW_SUPERUSER=1 composer install \
 RUN mkdir -p tpl_c uploads/images uploads/tos \
     && chown -R www-data:www-data tpl_c uploads
 
+# Entrypoint: fix MPM at runtime too (belt-and-suspenders) then start Apache
+RUN chmod +x /var/www/html/docker-entrypoint.sh
 EXPOSE 8080
-
-CMD ["apache2-foreground"]
+CMD ["/var/www/html/docker-entrypoint.sh"]
