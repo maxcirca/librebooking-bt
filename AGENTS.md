@@ -724,3 +724,113 @@ composer build -- upgrade.db        # Apply upgrades
 **Version**: 1.0
 **Last Updated**: 2026-02-16
 **Maintainers**: LibreBooking Community
+
+## Railway Deployment Notes (fork: `maxcirca/librebooking-bt`)
+
+This fork is deployed to Railway as the `librebooking-bt` service in the
+`Extracurricular` project. The service runs the app via a custom `Dockerfile`
+(NOT Railway's default Railpack/FrankenPHP builder) and connects to the
+existing `MariaDB-qETa` Railway service via `LB_DATABASE_*` env vars.
+
+### Lessons learned
+
+1. **Railpack/FrankenPHP is incompatible with LibreBooking's layout.**
+   Railway's default builder serves from `/app` (project root) and uses
+   FrankenPHP. LibreBooking's web root is `Web/`, and FrankenPHP's
+   `php_server` directive returned persistent 403s no matter how the
+   Caddyfile was tweaked. The fix was to commit a `Dockerfile` based on
+   `php:8.2-apache` — the same family the upstream LibreBooking image uses.
+2. **`php:8.2-apache` ships with multiple MPMs symlinked in
+   `mods-enabled/`** in some Railway build environments, causing Apache to
+   crash at startup with `AH00534: apache2: Configuration error: More than
+   one MPM loaded.`. `a2dismod mpm_event mpm_worker` silently fails to fix
+   this (the `|| true` masks the error). The reliable fix is to
+   forcefully `rm -f /etc/apache2/mods-enabled/mpm_event.{load,conf}` and
+   `mpm_worker.{load,conf}` in the Dockerfile, AND to repeat the cleanup
+   at container startup via `docker-entrypoint.sh` for belt-and-suspenders
+   reliability.
+3. **Railpack only installs PHP extensions declared in the root
+   `composer.json` require block.** Transitive `ext-*` requirements (from
+   dependencies like `claviska/simpleimage`) are ignored. Even with the
+   Dockerfile builder now, keep `"ext-gd": "*"` and `"ext-ldap": "*"`
+   explicit in `composer.json` so the deployment stays robust if anyone
+   reverts to Railpack.
+4. **`config/config.php` is hard-required at runtime** by
+   `lib/Config/Configuration.php` (line ~92: `CONFIG_FILE_PATH = ROOT_DIR
+   . 'config/config.php'`). Without it, the app dies with "Missing
+   config/config.php". For Railway, `config/config.php` is committed to
+   the repo (with `.gitignore` updated to un-ignore it). Sensitive values
+   (DB host/user/pass/name/type) are overridden at runtime via the
+   `LB_DATABASE_HOSTSPEC`, `LB_DATABASE_USER`, `LB_DATABASE_PASSWORD`,
+   `LB_DATABASE_NAME`, and `LB_DATABASE_TYPE` env vars, which are wired
+   to `${{MariaDB-qETa.MYSQLHOST}}` etc. in the Railway service
+   variables.
+5. **The MariaDB-qETa service needs a persistent volume** (`mariadb-data`
+   at `/var/lib/mysql`, 10GB). Without it, the DB resets on every
+   redeploy.
+6. **DocumentRoot must be set to `/var/www/html/Web`** in the
+   Apache vhost. The root `.htaccess` that redirects `/` → `/Web/` is
+   irrelevant when DocumentRoot already points at `Web/` (Apache doesn't
+   read parent-directory `.htaccess` files when AllowOverride is None
+   above the docroot).
+
+### Current state (as of last session)
+
+- Build: **SUCCESS** with the Apache Dockerfile + `docker-entrypoint.sh`.
+- Runtime: Apache 2.4.67 + PHP 8.2.31 + mpm_prefork is up and serving.
+- HTTP: requests reach the app but **`GET /` returns `301`** (with a
+  `662`-byte body). This is almost certainly LibreBooking's SSL
+  enforcement (in `Pages/Page.php` or `WebSecurityHelper`) detecting
+  HTTP and redirecting to HTTPS. Behind Railway's TLS-terminating edge
+  proxy, Apache sees HTTP even when the original request was HTTPS,
+  so the redirect loops back to itself → "site can't be reached".
+- DB schema: **not yet initialized** — no tables have been created in
+  MariaDB-qETa.
+
+### What to do next to bring the service up
+
+1. **Fix the HTTPS redirect loop.** Make PHP/Apache aware that the
+   original request was HTTPS via the `X-Forwarded-Proto` header that
+   Railway's edge sets. Options, in order of preference:
+   - Add a one-line Apache snippet that sets `HTTPS=on` when
+     `X-Forwarded-Proto: https` is present. Example, append to the
+     `<Directory /var/www/html/Web>` block in the Dockerfile or a new
+     `conf-enabled/forwarded-proto.conf`:
+     ```apache
+     SetEnvIf X-Forwarded-Proto "https" HTTPS=on
+     ```
+     This makes `$_SERVER['HTTPS']` return `'on'` in PHP, which is what
+     LibreBooking's SSL check looks at.
+   - Alternatively, disable the HTTPS enforcement in
+     `config/config.php` by setting `$conf['settings']['security']
+     ['ssl.enabled'] = 'false';` (or whatever the equivalent key is —
+     check `config.dist.php`). Less correct because the site is
+     actually HTTPS, but unblocks fastest.
+2. **Initialize the database schema.** MariaDB-qETa is empty. Either:
+   - Hit `/install.php` (note: that's `/install.php`, NOT
+     `/Web/install.php` — the DocumentRoot is already `Web/`) and run
+     the install wizard, OR
+   - Exec into the MariaDB container and import
+     `database_schema/create-schema.sql` plus any required
+     `database_schema/upgrades/*.sql` in version order.
+3. **Smoke-test the login page** at
+   `https://librebooking-bt-production.up.railway.app/` — should
+   render the LibreBooking login form, not a 301 or DB error.
+
+### Key files touched for this deployment
+
+- `Dockerfile` — `php:8.2-apache` build with explicit MPM cleanup.
+- `docker-entrypoint.sh` — runtime MPM cleanup + `apache2-foreground`.
+- `config/config.php` — committed (was previously gitignored).
+- `.gitignore` — un-ignored `/config/config.php` for Railway.
+- `composer.json` — added `"ext-gd": "*"` to the require block.
+
+### Things to avoid
+
+- Don't reintroduce a `Caddyfile` or `nixpacks.toml`/`railway.toml` —
+  Railway will respect the `Dockerfile` and that's what we want.
+- Don't `a2dismod` MPM modules without verifying they were actually
+  removed (use `rm -f` on the symlinks instead).
+- Don't push secrets to `config/config.php`. The committed file contains
+  only the dist defaults; all sensitive values are overridden by env
+  vars at runtime.
