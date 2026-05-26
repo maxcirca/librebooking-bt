@@ -14,6 +14,10 @@ ln -sf /etc/apache2/mods-available/mpm_prefork.conf /etc/apache2/mods-enabled/mp
 rm -f /etc/apache2/sites-enabled/000-default.conf
 rm -f /var/www/html/.htaccess
 
+# Ensure librebooking log directory exists and is writable.
+mkdir -p /var/log/librebooking
+chmod 777 /var/log/librebooking
+
 # Diagnostic: dump active vhost config + .htaccess inventory so misbehaviour
 # (e.g. unexpected redirects) can be diagnosed from Railway logs alone.
 echo "===== apache sites-enabled ====="
