@@ -774,53 +774,78 @@ existing `MariaDB-qETa` Railway service via `LB_DATABASE_*` env vars.
    read parent-directory `.htaccess` files when AllowOverride is None
    above the docroot).
 
-### Current state (as of last session)
+### Current state
 
 - Build: **SUCCESS** with the Apache Dockerfile + `docker-entrypoint.sh`.
 - Runtime: Apache 2.4.67 + PHP 8.2.31 + mpm_prefork is up and serving.
-- HTTP: requests reach the app but **`GET /` returns `301`** (with a
-  `662`-byte body). This is almost certainly LibreBooking's SSL
-  enforcement (in `Pages/Page.php` or `WebSecurityHelper`) detecting
-  HTTP and redirecting to HTTPS. Behind Railway's TLS-terminating edge
-  proxy, Apache sees HTTP even when the original request was HTTPS,
-  so the redirect loops back to itself → "site can't be reached".
-- DB schema: **not yet initialized** — no tables have been created in
-  MariaDB-qETa.
+- HTTP: `GET /` returns **200** with a `PHPSESSID` cookie — the login
+  page renders.
+- DB schema: **initialized** (57 tables in MariaDB-qETa, populated by
+  `db-init.sh` at first boot).
 
-### What to do next to bring the service up
+### Additional lessons (7-11)
 
-1. **Fix the HTTPS redirect loop.** Make PHP/Apache aware that the
-   original request was HTTPS via the `X-Forwarded-Proto` header that
-   Railway's edge sets. Options, in order of preference:
-   - Add a one-line Apache snippet that sets `HTTPS=on` when
-     `X-Forwarded-Proto: https` is present. Example, append to the
-     `<Directory /var/www/html/Web>` block in the Dockerfile or a new
-     `conf-enabled/forwarded-proto.conf`:
-     ```apache
-     SetEnvIf X-Forwarded-Proto "https" HTTPS=on
-     ```
-     This makes `$_SERVER['HTTPS']` return `'on'` in PHP, which is what
-     LibreBooking's SSL check looks at.
-   - Alternatively, disable the HTTPS enforcement in
-     `config/config.php` by setting `$conf['settings']['security']
-     ['ssl.enabled'] = 'false';` (or whatever the equivalent key is —
-     check `config.dist.php`). Less correct because the site is
-     actually HTTPS, but unblocks fastest.
-2. **Initialize the database schema.** MariaDB-qETa is empty. Either:
-   - Hit `/install.php` (note: that's `/install.php`, NOT
-     `/Web/install.php` — the DocumentRoot is already `Web/`) and run
-     the install wizard, OR
-   - Exec into the MariaDB container and import
-     `database_schema/create-schema.sql` plus any required
-     `database_schema/upgrades/*.sql` in version order.
-3. **Smoke-test the login page** at
-   `https://librebooking-bt-production.up.railway.app/` — should
-   render the LibreBooking login form, not a 301 or DB error.
+7. **The original "`/` returns 301" was not SSL enforcement.** It came
+   from the repo's root `.htaccess`, which contains a
+   `RewriteRule ^(.*)$ /Web/$1 [R=301,L]` intended for upstream's
+   layout where DocumentRoot is `/var/www/html`. With our DocumentRoot
+   already at `/var/www/html/Web` this rule turned `GET /` into a
+   redirect to `/Web/Web/`. Fixed by **removing
+   `/var/www/html/.htaccess` at container startup** (build-time `rm`
+   did not stick — see lesson 8). Also wired
+   `SetEnvIf X-Forwarded-Proto "https" HTTPS=on` into the vhost so
+   PHP sees `$_SERVER['HTTPS'] === 'on'` behind Railway's edge — that
+   was a preventive, but the actual 301 cause was the `.htaccess`.
+8. **Build-time `rm` of files copied in by `COPY .` is unreliable on
+   Railway.** Both `rm -f /var/www/html/.htaccess` and `rm -f
+   /etc/apache2/sites-enabled/000-default.conf` placed AFTER the
+   `COPY` were observed to NOT persist into the running container
+   (probably BuildKit layer caching or overlay quirks). The fix is to
+   **repeat the cleanup at runtime in `docker-entrypoint.sh`**. The
+   startup diagnostic dump in that script (sites-enabled, apache2ctl
+   -S, .htaccess inventory, /var/www/html/Web listing) made this
+   easy to see in Railway's deploy logs and is worth keeping.
+9. **The default Apache vhost (`000-default.conf`) was also still
+   loaded** even though the Dockerfile removed the symlink. Same root
+   cause as lesson 8. The replacement vhost lives in
+   `apache-librebooking.conf` (copied in, symlinked to
+   `sites-enabled/000-librebooking.conf`); the default symlink is
+   removed at startup. The vhost is the canonical source of truth for
+   the DocumentRoot, AllowOverride, DirectoryIndex, and
+   `X-Forwarded-Proto` handling.
+10. **Service-variable references must match the database service's
+    actual variable names.** The original config referenced
+    `${{MariaDB-qETa.MYSQLHOST}}` etc., but MariaDB-qETa (running the
+    `mariadb:11` image) only exposes `MARIADB_*` and
+    `RAILWAY_PRIVATE_DOMAIN`, NOT `MYSQL*`. The unresolved references
+    silently became empty strings. Current correct values:
+    ```text
+    LB_DATABASE_HOSTSPEC = ${{MariaDB-qETa.RAILWAY_PRIVATE_DOMAIN}}
+    LB_DATABASE_NAME     = ${{MariaDB-qETa.MARIADB_DATABASE}}
+    LB_DATABASE_USER     = ${{MariaDB-qETa.MARIADB_USER}}
+    LB_DATABASE_PASSWORD = ${{MariaDB-qETa.MARIADB_PASSWORD}}
+    LB_DATABASE_TYPE     = mysql
+    ```
+11. **First-boot schema init is wired in.** `db-init.sh` checks
+    `information_schema.tables` for the configured database; if the
+    table count is 0 it applies `database_schema/create-schema.sql`,
+    then `database_schema/upgrades/<version>/{schema,data}.sql` in
+    version order, then `database_schema/create-data.sql`. If any
+    tables already exist it is a no-op, so it is safe to invoke on
+    every container start. `default-mysql-client` is in the image so
+    the `mysql` binary is present.
 
 ### Key files touched for this deployment
 
-- `Dockerfile` — `php:8.2-apache` build with explicit MPM cleanup.
-- `docker-entrypoint.sh` — runtime MPM cleanup + `apache2-foreground`.
+- `Dockerfile` — `php:8.2-apache`, explicit MPM cleanup, clean
+  Apache vhost, `default-mysql-client` for db-init.
+- `apache-librebooking.conf` — canonical vhost: docroot
+  `/var/www/html/Web`, DirectoryIndex `index.php`,
+  `SetEnvIf X-Forwarded-Proto "https" HTTPS=on`.
+- `docker-entrypoint.sh` — runtime MPM cleanup, runtime removal of
+  `/var/www/html/.htaccess` and the default vhost symlink, startup
+  diagnostic dump, calls `db-init.sh`, then `apache2-foreground`.
+- `db-init.sh` — idempotent first-boot DB schema bootstrap.
 - `config/config.php` — committed (was previously gitignored).
 - `.gitignore` — un-ignored `/config/config.php` for Railway.
 - `composer.json` — added `"ext-gd": "*"` to the require block.
