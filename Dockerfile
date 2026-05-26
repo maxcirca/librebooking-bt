@@ -31,17 +31,28 @@ RUN sed -i 's/Listen 80$/Listen 8080/' /etc/apache2/ports.conf \
               /etc/apache2/mods-enabled/mpm_event.conf \
               /etc/apache2/mods-enabled/mpm_worker.load \
               /etc/apache2/mods-enabled/mpm_worker.conf \
-    && a2enmod mpm_prefork rewrite headers
+    && a2enmod mpm_prefork rewrite headers \
+    && echo 'ServerName localhost' >> /etc/apache2/apache2.conf
 
-# Allow .htaccess overrides
+# Configure the docroot:
+#   - Allow .htaccess overrides for app-level rules
+#   - Trust Railway's edge X-Forwarded-Proto so PHP sees HTTPS=on and any
+#     SSL-aware code paths behave correctly behind the TLS-terminating proxy
 RUN echo '<Directory /var/www/html/Web>\n\
     Options -Indexes +FollowSymLinks\n\
     AllowOverride All\n\
     Require all granted\n\
+    DirectoryIndex index.php index.html\n\
+    SetEnvIf X-Forwarded-Proto "https" HTTPS=on\n\
 </Directory>' >> /etc/apache2/sites-enabled/000-default.conf
 
 # Copy application
 COPY --chown=www-data:www-data . /var/www/html/
+
+# The repo's root .htaccess redirects non-/Web URLs to /Web/* — that was for
+# upstream's docroot=/var/www/html layout. We serve directly from Web/, so it
+# would cause a /Web/Web/ redirect loop. Remove it post-copy.
+RUN rm -f /var/www/html/.htaccess
 
 WORKDIR /var/www/html
 
