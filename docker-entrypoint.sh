@@ -18,6 +18,17 @@ rm -f /var/www/html/.htaccess
 mkdir -p /var/log/librebooking
 chmod 777 /var/log/librebooking
 
+# If Railway injects $PORT, reconfigure Apache to listen on it.
+# Railway's proxy routes to $PORT; if we ignore it, nothing reaches Apache.
+LISTEN_PORT="${PORT:-8080}"
+echo "[entrypoint] PORT env var = '${PORT:-<not set>}', Apache will listen on ${LISTEN_PORT}"
+if [ "${LISTEN_PORT}" != "8080" ]; then
+    echo "[entrypoint] Rewriting Apache ports.conf to Listen ${LISTEN_PORT}"
+    sed -i "s/Listen 8080/Listen ${LISTEN_PORT}/" /etc/apache2/ports.conf
+    sed -i "s/<VirtualHost \*:8080>/<VirtualHost *:${LISTEN_PORT}>/" \
+        /etc/apache2/sites-available/librebooking.conf
+fi
+
 # Diagnostic: dump active vhost config + .htaccess inventory so misbehaviour
 # (e.g. unexpected redirects) can be diagnosed from Railway logs alone.
 echo "===== apache sites-enabled ====="
