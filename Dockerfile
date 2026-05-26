@@ -21,30 +21,20 @@ RUN docker-php-ext-configure gd --with-freetype --with-jpeg \
 # Install Composer
 COPY --from=composer:lts /usr/bin/composer /usr/bin/composer
 
-# Configure Apache: listen on 8080, serve from Web/
-# Forcefully remove any conflicting MPM symlinks, then enable only mpm_prefork
+# Configure Apache: listen on 8080, only mpm_prefork, replace the default vhost
+# with our own clean config that serves directly from /var/www/html/Web.
 RUN sed -i 's/Listen 80$/Listen 8080/' /etc/apache2/ports.conf \
-    && sed -i 's/:80>/:8080>/' /etc/apache2/sites-enabled/000-default.conf \
-    && sed -i 's|DocumentRoot /var/www/html|DocumentRoot /var/www/html/Web|' \
-        /etc/apache2/sites-enabled/000-default.conf \
     && rm -f /etc/apache2/mods-enabled/mpm_event.load \
               /etc/apache2/mods-enabled/mpm_event.conf \
               /etc/apache2/mods-enabled/mpm_worker.load \
               /etc/apache2/mods-enabled/mpm_worker.conf \
     && a2enmod mpm_prefork rewrite headers \
-    && echo 'ServerName localhost' >> /etc/apache2/apache2.conf
+    && echo 'ServerName localhost' >> /etc/apache2/apache2.conf \
+    && rm -f /etc/apache2/sites-enabled/000-default.conf
 
-# Configure the docroot:
-#   - Allow .htaccess overrides for app-level rules
-#   - Trust Railway's edge X-Forwarded-Proto so PHP sees HTTPS=on and any
-#     SSL-aware code paths behave correctly behind the TLS-terminating proxy
-RUN echo '<Directory /var/www/html/Web>\n\
-    Options -Indexes +FollowSymLinks\n\
-    AllowOverride All\n\
-    Require all granted\n\
-    DirectoryIndex index.php index.html\n\
-    SetEnvIf X-Forwarded-Proto "https" HTTPS=on\n\
-</Directory>' >> /etc/apache2/sites-enabled/000-default.conf
+COPY apache-librebooking.conf /etc/apache2/sites-available/librebooking.conf
+RUN ln -sf /etc/apache2/sites-available/librebooking.conf \
+        /etc/apache2/sites-enabled/000-librebooking.conf
 
 # Copy application
 COPY --chown=www-data:www-data . /var/www/html/
