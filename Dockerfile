@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y \
     libjpeg-dev \
     libfreetype6-dev \
     unzip \
+    default-mysql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Install PHP extensions
@@ -57,6 +58,6 @@ RUN mkdir -p tpl_c uploads/images uploads/tos \
     && chown -R www-data:www-data tpl_c uploads
 
 # Entrypoint: fix MPM at runtime too (belt-and-suspenders) then start Apache
-RUN chmod +x /var/www/html/docker-entrypoint.sh
+RUN chmod +x /var/www/html/docker-entrypoint.sh /var/www/html/db-init.sh
 EXPOSE 8080
 CMD ["/var/www/html/docker-entrypoint.sh"]

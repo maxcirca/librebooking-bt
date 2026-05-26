@@ -29,4 +29,8 @@ apache2ctl -S 2>&1 || true
 echo "===== /var/www/html/Web listing ====="
 ls -la /var/www/html/Web/ 2>/dev/null | head -20 || true
 
+# Initialize the DB schema if the database is empty. Idempotent.
+echo "===== db-init ====="
+/var/www/html/db-init.sh || echo "db-init exited non-zero (continuing to Apache start)"
+
 exec apache2-foreground
