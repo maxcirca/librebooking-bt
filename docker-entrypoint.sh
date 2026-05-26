@@ -8,6 +8,12 @@ rm -f /etc/apache2/mods-enabled/mpm_event.load \
 ln -sf /etc/apache2/mods-available/mpm_prefork.load /etc/apache2/mods-enabled/mpm_prefork.load 2>/dev/null || true
 ln -sf /etc/apache2/mods-available/mpm_prefork.conf /etc/apache2/mods-enabled/mpm_prefork.conf 2>/dev/null || true
 
+# Build-time `rm -f` of these has been observed to not take effect (Railway
+# layer caching / overlay weirdness). Repeat the removal at startup so the
+# running container always has a clean slate.
+rm -f /etc/apache2/sites-enabled/000-default.conf
+rm -f /var/www/html/.htaccess
+
 # Diagnostic: dump active vhost config + .htaccess inventory so misbehaviour
 # (e.g. unexpected redirects) can be diagnosed from Railway logs alone.
 echo "===== apache sites-enabled ====="
